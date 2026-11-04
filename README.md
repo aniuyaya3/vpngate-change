@@ -48,11 +48,8 @@ tests/
 
 ```bash
 npm install
-npx wrangler d1 create vpngate-change-db   # 记下输出的 database_id
-
-# database_id 不写死在仓库里，二选一：
-#  A) 变量注入（推荐，不同仓库/项目各自填变量）：见下方「变量驱动部署」
-#  B) 直接把 wrangler.toml 里的占位符 database_id 改成上面的 ID
+# D1 无需手工创建：wrangler.toml 只留 binding，走 Wrangler 自动置备，
+# 首次 deploy 时按 Worker 名自动创建专属库并绑定（见下）
 
 # 管理员密码哈希（明文不进任何配置）
 node tools/hash-password.mjs '你的管理员密码'
@@ -63,24 +60,29 @@ npx wrangler secret put PROXY_PASS          # 代理用户密码
 npx wrangler deploy
 ```
 
-### 变量驱动部署（database_id / Worker 名不进仓库）
+### D1 自动置备（库名/ID 都不进仓库）
 
-wrangler.toml 里 `database_id` 只留占位符，真实值在部署时由环境变量
-注入（`tools/deploy.mjs` 生成临时配置完成替换，不改源文件），这样
-同一份代码被不同仓库 / 不同 CF 项目引用时，各自填各自的变量即可：
+wrangler.toml 的 D1 绑定只写 `binding = "DB"`，不写 `database_name`、
+不写 `database_id`。Wrangler（>= 4.45）的自动置备会在首次
+`wrangler deploy` 时按 Worker 名字自动创建一个专属 D1 并绑定，
+后续部署自动复用同一个库；换一个 Worker 名部署就是另一个实例、
+另一个自动命名的库，互不干扰。不同仓库引用同一份代码同理，
+不需要任何人填库 ID。
 
-Cloudflare Workers Builds 设置：
+Cloudflare Workers Builds 设置（最简）：
 
 - 构建命令：无
-- 构建变量：`DATABASE_ID=<你的 D1 库 ID>`（可选再加 `WORKER_NAME=<实例名>`）
-- 部署命令：`node tools/deploy.mjs`
+- 构建变量：无
+- 部署命令：`npx wrangler deploy`
 - 根目录：`/`
 
-本地同理：
+可选覆盖（`tools/deploy.mjs`，一般用不上）：
 
 ```bash
-DATABASE_ID=<uuid> WORKER_NAME=<name> npm run deploy:vars
-# 两个变量都不设时，deploy.mjs 会原样使用 wrangler.toml 部署
+# 改实例名（库名随新 Worker 名自动生成）
+WORKER_NAME=<name> npm run deploy:vars
+# 手动指定一个现成的 D1 库（填了就不再自动置备）
+DATABASE_ID=<uuid> npm run deploy:vars
 ```
 
 ### 首次部署设置向导（可代替手工生成哈希）
