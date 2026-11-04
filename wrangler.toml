@@ -2,8 +2,7 @@
 #   WORKER_NAME=proxy-a npm run deploy:named
 # 等价于 wrangler deploy --name proxy-a（secret 也可按实例设置：
 #   wrangler secret put ADMIN_PASS_HASH --name proxy-a）
-# 注意：--name 只改 Worker 名，D1 仍按下方 database_id 共享；
-# 要连数据也完全独立，见 README「同账号多实例部署」。
+# D1 走自动置备、按 Worker 名建库（见下方），不同名字的实例数据天然独立。
 name = "vpngate-change"
 main = "src/index.js"
 compatibility_date = "2025-04-01"
