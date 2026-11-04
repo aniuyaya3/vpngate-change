@@ -1,176 +1,126 @@
-# vpngate-change · 免费住宅IP智能调度系统（Wrangler 版）
+# vpngate-change · 免费住宅 IP 智能调度系统
 
-自旧版单文件 `_worker.js`（Pages 部署）重构为标准 Wrangler 项目，业务行为
-（多服务器独立策略、Alpine/Debian 自适应 agent、节点调度）保持不变；
-账号登录全面升级为 PBKDF2-SHA256 + 防爆破分级延迟 + 安全 Session +
-管理员独立保护。
+基于 Cloudflare Workers + D1 的住宅代理调度：多台 VPS 各自独立策略，
+agent 自适应 Alpine/Debian，节点自动调度。账号登录为 PBKDF2-SHA256
+哈希校验 + 防爆破分级延迟 + 安全 Session，管理员与 VPS agent 两套凭证互不相通。
 
-## 项目结构
+## 快速部署
 
-```text
-wrangler.toml            Wrangler 配置（D1 绑定 DB）
-src/
-  index.js               入口（仅导出 fetch）
-  router.js              路由与三层鉴权分发
-  auth.js                PBKDF2-SHA256 / 防爆破 / Session / CSRF
-  db.js                  D1 建表与配置存取
-  api.js                 配置 / 节点 / 上报 / 国家列表等业务接口
-  dashboard.js           管理面板 HTML（自旧版拆分）
-  login_page.js          管理员登录页
-  scripts/
-    proxy_server.py      由 proxy_server.js 模板生成（Python 引擎）
-    lite_manager.py      由 lite_manager.js 模板生成（Python 引擎）
-    agent.js             VPS 安装 / 卸载 bash 脚本模板
-tools/hash-password.mjs  生成管理员密码哈希
-tests/
-  auth.test.mjs          单元测试（node --test）
-  e2e.mjs                对 wrangler dev 实例的端到端测试
-```
+Cloudflare Workers Builds（Git 连接）设置：
 
-## 账号安全设计
+| 项 | 值 |
+|---|---|
+| 构建命令 | 无 |
+| 构建变量 | 无 |
+| 部署命令 | `npx wrangler deploy` |
+| 根目录 | `/` |
 
-| 机制 | 实现 |
-| --- | --- |
-| 密码存储 | PBKDF2-SHA256，100,000 次迭代（可调 `AUTH_PBKDF2_ITERATIONS`；Workers 的 WebCrypto 硬上限即 100,000，超过会抛 NotSupportedError），16 字节随机盐，32 字节派生密钥；哈希串格式 `pbkdf2-sha256$迭代$盐$哈希`。服务端不存明文密码，校验为派生后常数时间比较；账号不存在时走等价虚拟哈希，防时序枚举 |
-| 防爆破 | 失败计数按 `(来源 IP + 账号)` 与 `(账号)` 双维度记录在 D1。分级延迟：失败 1–2 次不延迟，3 次 2s、4 次 5s、5 次 15s、6 次 30s、7 次 60s、8 次 120s、9 次 300s；`(IP+账号)` 维度满 10 次锁定 15 分钟。等待期内请求在验密前直接返回 `429 + Retry-After`。账号全局维度只延迟不硬锁，防止攻击者用已知用户名把管理员锁死 |
-| 安全 Session | 登录签发 256 位随机令牌，D1 只存其 SHA-256 哈希；Cookie 为 `__Host-session`（HttpOnly + Secure + SameSite=Strict），绝对过期 12 小时、空闲过期 30 分钟（滑动），绑定 User-Agent 指纹，登录即轮换，登出即注销 |
-| CSRF / 点击劫持 | 管理员写操作必须带面板注入的 `X-CSRF-Token`（双提交）；设置向导用一次性 nonce；全站响应带 `no-store`、`nosniff`、`X-Frame-Options: DENY` |
-| 管理员独立保护 | 管理员与 VPS agent 使用**两套完全独立的凭证**：agent 凭证（`AGENT_TOKEN`）只能访问拉配置 / 上报 / 下载脚本，不能进面板、不能调管理员 API；管理员 Session 也不能替代 agent 凭证。管理员被锁定不影响 agent 心跳，agent 凭证泄露不会交出面板 |
-| 默认口令 | 已移除旧版 `admin888` 默认密码：未配置任何管理员凭证时登录直接返回 503 |
+部署完成后三步即可使用：
 
-鉴权分层：
+1. 打开 Worker 域名，未设置过密码时会自动进入 `/setup` 设置管理员密码
+   （设置的密码立即生效，哈希保存在 D1 中）；
+2. 按成功页提示，把 `ADMIN_PASS_HASH` 加入后台「设置 → 变量和机密」（类型选**机密**）；
+3. 同处再添加 `AGENT_TOKEN` 与 `PROXY_PASS` 两个机密，VPS 即可接入。
 
-- 公开：`GET /api/countries`、`GET /health`、`/login`、`/setup`（仅在未配置任何管理员凭证时开放，设置后永久关闭）
-- agent（Basic `agent:<AGENT_TOKEN>` 或 Bearer）：`GET /scripts/*.py`、`GET /agent`、`GET /uninstall`、`GET /api/config`、`POST /api/report`
-- 管理员（Session，写操作加 CSRF）：`GET /`、`GET /api/nodes`、`GET /api/proxies`、`GET /api/config`、`POST /api/config`、`POST /api/switch`
+各 VPS 部署后需重跑面板中的新版接入命令；未重装的旧 agent 继续兼容（见「从旧版迁移」）。
 
-## 部署
-
-```bash
-npm install
-# D1 无需手工创建：wrangler.toml 只留 binding，走 Wrangler 自动置备，
-# 首次 deploy 时按 Worker 名自动创建专属库并绑定（见下）
-
-# 管理员密码哈希（明文不进任何配置）
-node tools/hash-password.mjs '你的管理员密码'
-npx wrangler secret put ADMIN_PASS_HASH     # 粘贴上一步输出
-npx wrangler secret put AGENT_TOKEN         # 长随机串，如 openssl rand -hex 32
-npx wrangler secret put PROXY_PASS          # 代理用户密码
-
-npx wrangler deploy
-```
-
-### 环境变量一览
+## 环境变量
 
 | 变量名 | 说明 | 默认值/示例值 | 必填 |
 |---|---|---|---|
 | ADMIN_USER | 管理员登录账号名 | 默认 `admin` | 否 |
-| ADMIN_PASS_HASH | 管理员密码的 PBKDF2 哈希 | 例 `pbkdf2-sha256$100000$<盐>$<哈希>`，/setup 成功页会给出，或用 `node tools/hash-password.mjs '密码'` 生成 | 否（用 /setup 设密码就不用填） |
+| ADMIN_PASS_HASH | 管理员密码的 PBKDF2 哈希 | 例 `pbkdf2-sha256$100000$<盐>$<哈希>`，/setup 成功页给出，或用 `node tools/hash-password.mjs '密码'` 生成 | 否（用 /setup 设密码就不用填） |
 | AGENT_USER | VPS agent 的账号名 | 默认 `agent` | 否 |
-| AGENT_TOKEN | VPS agent 与 Worker 的通信令牌 | 长随机串，如 `openssl rand -hex 32` 的输出 | 是（不设 agent 接口回 503，VPS 接不进来） |
+| AGENT_TOKEN | VPS agent 与 Worker 的通信令牌 | 长随机串，如 `openssl rand -hex 32` 的输出 | 是（不设 agent 接口回 503） |
 | PROXY_USER | 客户端连代理用的账号名 | `proxyuser`（已在 wrangler.toml 里） | 否 |
 | PROXY_PASS | 客户端连 SOCKS5/HTTP 代理的密码 | 默认 `888888`，务必改掉 | 否（但强烈建议设） |
 | PROXY_PORT | 代理监听端口 | `10001`（已在 wrangler.toml 里） | 否 |
-| AUTH_PBKDF2_ITERATIONS | 密码哈希迭代次数 | 默认 `100000`，可填 10000–100000（Workers 硬上限就是 100000） | 否 |
+| AUTH_PBKDF2_ITERATIONS | 密码哈希迭代次数 | 默认 `100000`，可填 10000–100000（Workers 硬上限即 100000） | 否 |
 | WEB_USER | 旧版兼容变量，**忽略** | — | 否 |
 | WEB_PASS | 旧版兼容变量，**忽略** | — | 否 |
 | WEB_PASS_HASH | 旧版兼容变量，**忽略** | — | 否 |
 
-设置位置：`ADMIN_PASS_HASH`、`AGENT_TOKEN`、`PROXY_PASS` 用密钥（secret）方式设置，
-不会被 Git 推送部署冲掉；其余纯文本变量要长期生效须写进 wrangler.toml 的 `[vars]`
-（只在 CF 面板手加的纯文本变量会在下一次推送部署时被配置覆盖）。
-`DB` 是 D1 绑定而非变量，走自动置备，无需填写。
+- 密钥类（`ADMIN_PASS_HASH`、`AGENT_TOKEN`、`PROXY_PASS`）在后台以机密方式设置，不会被 Git 推送部署冲掉；
+- 纯文本变量要长期生效须写进 wrangler.toml 的 `[vars]`，只在后台手加的会在下一次推送部署时被覆盖；
+- `DB` 是 D1 绑定而非变量，走自动置备（见下），无需填写。
 
-### D1 自动置备（库名/ID 都不进仓库）
+## 项目结构
 
-wrangler.toml 的 D1 绑定只写 `binding = "DB"`，不写 `database_name`、
-不写 `database_id`。Wrangler（>= 4.45）的自动置备会在首次
-`wrangler deploy` 时按 Worker 名字自动创建一个专属 D1 并绑定，
-后续部署自动复用同一个库；换一个 Worker 名部署就是另一个实例、
-另一个自动命名的库，互不干扰。不同仓库引用同一份代码同理，
-不需要任何人填库 ID。
-
-Cloudflare Workers Builds 设置（最简）：
-
-- 构建命令：无
-- 构建变量：无
-- 部署命令：`npx wrangler deploy`
-- 根目录：`/`
-
-可选覆盖（`tools/deploy.mjs`，一般用不上）：
-
-```bash
-# 改实例名（库名随新 Worker 名自动生成）
-WORKER_NAME=<name> npm run deploy:vars
-# 手动指定一个现成的 D1 库（填了就不再自动置备）
-DATABASE_ID=<uuid> npm run deploy:vars
+```text
+wrangler.toml            Wrangler 配置（D1 只留 binding，自动置备）
+src/
+  index.js               入口（仅导出 fetch）
+  router.js              路由与三层鉴权分发
+  auth.js                PBKDF2 / 防爆破 / Session / CSRF / 设置向导 nonce
+  db.js                  D1 建表与配置存取
+  api.js                 配置 / 节点 / 上报 / 国家列表等业务接口
+  dashboard.js           管理面板 HTML
+  login_page.js          登录页与首次设置向导页
+  scripts/               下发给 VPS 的 proxy_server / lite_manager（Python）与安装脚本模板
+tools/
+  hash-password.mjs      生成管理员密码哈希
+  deploy.mjs             可选的变量驱动部署（见「进阶」）
+tests/
+  auth.test.mjs          单元测试
+  e2e.mjs                主流程端到端测试
+  setup.e2e.mjs          首次设置向导端到端测试
 ```
 
-### 首次部署设置向导（可代替手工生成哈希）
+## 账号安全
 
-不想在本地生成哈希也可以：先只建好 D1 并部署（管理员 secret 可以先不设），
-然后打开你的 Worker 域名——在没有任何管理员凭证时，根路径会自动弹出
-「设置管理员密码」页面：
+| 机制 | 实现 |
+|---|---|
+| 密码存储 | PBKDF2-SHA256，100,000 次迭代，16 字节随机盐；不存明文，校验为常数时间比较，不存在的账号走等价虚拟哈希防时序枚举 |
+| 防爆破 | 按「来源 IP + 账号」与「账号」双维度计数：失败 3 次起分级延迟（2s → 300s），IP 维度满 10 次锁定 15 分钟；等待期直接回 `429 + Retry-After`；账号维度只延迟不硬锁，防管理员被锁死 |
+| Session | 256 位随机令牌，D1 只存 SHA-256；Cookie `__Host-session`（HttpOnly / Secure / SameSite=Strict），绝对过期 12h、空闲过期 30min，绑定 UA 指纹，登录轮换、登出注销 |
+| CSRF | 管理员写操作校验面板注入的 `X-CSRF-Token`；设置向导用无状态签名 nonce；全站响应带 `no-store`、`nosniff`、`X-Frame-Options: DENY` |
+| 凭证分离 | 管理员与 agent 两套独立凭证：`AGENT_TOKEN` 只能拉配置、上报、下脚本，进不了面板与管理员 API；管理员被锁不影响 agent 心跳 |
+| 默认口令 | 旧版 `admin888` 已移除；未配置任何管理员凭证时登录回 503 |
 
-1. 在页面上设置密码（至少 8 位）并提交；
-2. 密码立即生效（PBKDF2 哈希保存在 D1 中），并自动登录进面板；
-3. 成功页会给出变量名 `ADMIN_PASS_HASH` 与对应的哈希值，复制到 CF 后台
-   （Worker → 设置 → 变量和机密 → 添加机密）保存即可；机密变量优先级
-   最高，保存后以它为准。
+接口分层：
 
-安全说明：向导只在「secret、旧变量、D1 哈希三者全为空」时开放，设置
-完成后永久关闭；但在设置完成之前，第一个打开域名的人都能抢先设置，
-所以部署后请立刻完成设置，不要把未设置的实例长时间暴露在公网。
+- **公开**：`GET /health`、`GET /api/countries`、`/login`、`/setup`（仅未设置密码时开放）
+- **agent**（Basic `agent:<AGENT_TOKEN>` 或 Bearer）：`GET /api/config`、`POST /api/report`、`GET /scripts/*.py`、`GET /agent`、`GET /uninstall`
+- **管理员**（Session，写操作加 CSRF）：`GET /`、`GET /api/nodes`、`GET /api/proxies`、`GET|POST /api/config`、`POST /api/switch`
 
-找回/重置密码：删除 CF 后台的 `ADMIN_PASS_HASH` 机密，并删除 D1
-`auth_config` 表中 `admin_pass_hash` 与 `admin_pass_fp` 两行，向导会
-重新开放，可重新设定。
+## 进阶
 
-部署后已部署的旧版 agent 需重新运行面板中的接入命令（新版安装命令使用
-agent 凭证）；未重装的旧 agent 以旧 `WEB_USER:WEB_PASS` 凭证继续兼容
-（见下）。
+### D1 自动置备
 
-## 同账号多实例部署（Worker 名字用变量）
+wrangler.toml 的 D1 绑定只写 `binding = "DB"`，不写库名与 ID。
+Wrangler（≥ 4.45）首次部署时按 Worker 名自动创建专属 D1 并绑定，
+后续部署自动复用；仓库里不出现任何固定库名或 ID。
 
-wrangler.toml 里的 `name` 只是默认实例名。同一份代码可以在同一个
-Cloudflare 账号下以任意名字反复部署（变量来自命令行 `--name`，
-覆盖配置文件；注意 wrangler.toml 的字段本身不支持 `${VAR}` 插值）：
+### 同账号多实例
+
+同一账号下可用不同 Worker 名部署多套实例，D1 会随实例名自动新建，
+数据天然隔离；每个实例的机密需按实例分别设置：
 
 ```bash
-# 以 proxy-a 这个名字部署（等价于 npx wrangler deploy --name proxy-a）
-WORKER_NAME=proxy-a npm run deploy:named
-
-# 每个实例分别设置自己的 secret（--name 指到哪个 Worker 就设哪个）
-npx wrangler secret put ADMIN_PASS_HASH --name proxy-a
+WORKER_NAME=proxy-a npm run deploy:named        # 等价 wrangler deploy --name proxy-a
 npx wrangler secret put AGENT_TOKEN --name proxy-a
-npx wrangler secret put PROXY_PASS --name proxy-a
 ```
 
-注意数据隔离：`--name` 只改 Worker 名，各实例仍共用 wrangler.toml 里
-`database_id` 指向的同一个 D1（配置、节点、Session 互通）。要连数据
-也完全独立的实例，复制一份配置改名并换库：
+可选覆盖（`tools/deploy.mjs`，一般用不上）：`WORKER_NAME=<name> npm run deploy:vars`
+改实例名；`DATABASE_ID=<uuid> npm run deploy:vars` 手动指定现成的 D1（填了就不再自动置备）。
 
-```bash
-npx wrangler d1 create vpngate-change-db-b   # 记下新的 database_id
-cp wrangler.toml wrangler.proxy-b.toml       # 改 name 与 database_id
-npx wrangler deploy -c wrangler.proxy-b.toml
-```
+### 找回 / 重置管理员密码
 
-## 从旧版迁移（兼容说明）
+删除后台的 `ADMIN_PASS_HASH` 机密，并删除 D1 `auth_config` 表中
+`admin_pass_hash` 与 `admin_pass_fp` 两行，`/setup` 向导会重新开放。
 
-- 若线上只设置了旧版 `WEB_USER / WEB_PASS` secret 而没有 `ADMIN_PASS_HASH`：
-  首次登录时系统自动把 `WEB_PASS` 引导为 D1 中的 PBKDF2 哈希（绑定指纹），
-  之后校验只走哈希；日后修改 `WEB_PASS` 会自动重新引导。
-  迁移完成后建议改用 `ADMIN_PASS_HASH` + 独立 `AGENT_TOKEN` 并删除 `WEB_PASS`。
-- 存量 VPS 上的旧 agent 内嵌的是旧凭证组合，服务端继续接受
-  `WEB_USER:WEB_PASS` 作为 agent 凭证，所以升级 Worker 不会让存量节点掉线；
-  待各 VPS 重跑新版接入命令后，可删除 `WEB_PASS` 完成彻底分离。
+### 从旧版迁移
+
+- 只设了旧 `WEB_PASS` 时，首次登录会自动把它引导为 D1 中的 PBKDF2 哈希，
+  之后只走哈希校验；迁移后建议改用 `ADMIN_PASS_HASH` + `AGENT_TOKEN` 并删除 `WEB_PASS`。
+- 存量 VPS 的旧 agent 继续以 `WEB_USER:WEB_PASS` 作为 agent 凭证被接受，不会掉线。
 
 ## 本地开发与测试
 
 ```bash
 # .dev.vars（不要提交）：ADMIN_PASS_HASH / AGENT_TOKEN / PROXY_PASS
 npm run dev
-node --test tests/auth.test.mjs
+npm test
 BASE_URL=http://127.0.0.1:8787 ADMIN_PASS='...' AGENT_TOKEN='...' node tests/e2e.mjs
+BASE_URL=http://127.0.0.1:8789 node tests/setup.e2e.mjs   # 对未设密码的实例运行
 ```
