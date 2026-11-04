@@ -8,17 +8,22 @@
 //    agent 凭证不能访问任何管理员接口，管理员锁定不影响 agent 心跳
 // ============================================================
 
-export const PBKDF2_ITERATIONS = 210000;
+// 注意：Cloudflare Workers 的 WebCrypto 对 PBKDF2 迭代次数有硬上限 100000，
+// 超过会直接抛 NotSupportedError（本地 Node/workerd dev 不拦截、线上才炸，
+// 2026-11-04 线上 /setup 1101 即此因）。任何路径都不得超过这个值。
+export const PBKDF2_MAX_ITERATIONS = 100000;
+export const PBKDF2_ITERATIONS = 100000;
 const DK_LEN = 32;
 const SALT_LEN = 16;
 // 用户不存在时也跑一次等价校验，避免按响应时间枚举账号
-const DUMMY_HASH = "pbkdf2-sha256$210000$AQIDBAUGBwgJCgsMDQ4PEA==$6O6TvbCInAhWIwi4saTJMPkXqccoLEvFbuaQTIWL3fk=";
+const DUMMY_HASH = "pbkdf2-sha256$100000$AQIDBAUGBwgJCgsMDQ4PEA==$6O6TvbCInAhWIwi4saTJMPkXqccoLEvFbuaQTIWL3fk=";
 
 const enc = new TextEncoder();
 
 export function iterationsOf(env) {
   const n = parseInt(env && env.AUTH_PBKDF2_ITERATIONS, 10);
-  return Number.isInteger(n) && n >= 50000 && n <= 1000000 ? n : PBKDF2_ITERATIONS;
+  if (!Number.isInteger(n)) return PBKDF2_ITERATIONS;
+  return Math.min(Math.max(n, 10000), PBKDF2_MAX_ITERATIONS);
 }
 
 function b64encode(bytes) {
@@ -56,9 +61,10 @@ async function derive(password, salt, iterations) {
 
 // 生成哈希串：pbkdf2-sha256$<iterations>$<salt_b64>$<hash_b64>
 export async function hashPassword(password, iterations = PBKDF2_ITERATIONS) {
+  const iters = Math.min(Math.max(parseInt(iterations, 10) || PBKDF2_ITERATIONS, 1000), PBKDF2_MAX_ITERATIONS);
   const salt = crypto.getRandomValues(new Uint8Array(SALT_LEN));
-  const dk = await derive(password, salt, iterations);
-  return `pbkdf2-sha256$${iterations}$${b64encode(salt)}$${b64encode(dk)}`;
+  const dk = await derive(password, salt, iters);
+  return `pbkdf2-sha256$${iters}$${b64encode(salt)}$${b64encode(dk)}`;
 }
 
 export function parseHash(stored) {
@@ -76,7 +82,14 @@ export function parseHash(stored) {
 }
 
 export async function verifyPassword(password, stored) {
-  const parsed = parseHash(stored) || parseHash(DUMMY_HASH);
+  const parsed = parseHash(stored);
+  // 哈希缺失/格式坏/迭代数超过运行时上限（旧版 210000 生成的哈希）时，
+  // 本运行时无法校验：跑一次等价开销的虚拟校验后直接判否，不抛异常
+  if (!parsed || parsed.iterations > PBKDF2_MAX_ITERATIONS) {
+    const dummy = parseHash(DUMMY_HASH);
+    await derive(String(password ?? ""), dummy.salt, dummy.iterations);
+    return false;
+  }
   const dk = await derive(String(password ?? ""), parsed.salt, parsed.iterations);
   return timingSafeEqual(dk, parsed.dk);
 }
@@ -171,29 +184,44 @@ export async function storeSetupAdminHash(db, hash) {
     ON CONFLICT(key) DO UPDATE SET value = excluded.value`).run();
 }
 
-// 设置向导的一次性 nonce（防 CSRF 用，不依赖 Origin 头）：
-// GET /setup 时生成、只存哈希，POST 时比对且 30 分钟内有效，成功后删除。
+// 设置向导的防 CSRF nonce：无状态签名，不依赖 Origin 头。
+// 形式 <过期毫秒>.<HMAC-SHA256 签名>，签名密钥存 auth_config.setup_key（只生成一次）。
+// 无状态意味着多次打开/刷新设置页互不影响（旧版单槽存储会被后一次打开冲掉，
+// 2026-11-04 线上探针即因此误报「页面已过期」），30 分钟内有效。
+async function setupKey(db) {
+  const row = await db.prepare(`SELECT value FROM auth_config WHERE key = 'setup_key'`).first();
+  if (row && row.value) return row.value;
+  const key = randomToken(32);
+  await db.prepare(`INSERT OR IGNORE INTO auth_config (key, value) VALUES ('setup_key', ?1)`).bind(key).run();
+  const again = await db.prepare(`SELECT value FROM auth_config WHERE key = 'setup_key'`).first();
+  return (again && again.value) || key;
+}
+
+async function hmacHex(keyText, text) {
+  const key = await crypto.subtle.importKey("raw", enc.encode(keyText), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  const sig = await crypto.subtle.sign("HMAC", key, enc.encode(text));
+  return [...new Uint8Array(sig)].map((x) => x.toString(16).padStart(2, "0")).join("");
+}
+
 export async function createSetupNonce(db) {
-  const nonce = randomToken(32);
-  const now = Date.now();
-  await db.prepare(`INSERT INTO auth_config (key, value) VALUES ('setup_nonce', ?1)
-    ON CONFLICT(key) DO UPDATE SET value = excluded.value`).bind(await sha256Hex(nonce)).run();
-  await db.prepare(`INSERT INTO auth_config (key, value) VALUES ('setup_nonce_at', ?1)
-    ON CONFLICT(key) DO UPDATE SET value = excluded.value`).bind(String(now)).run();
-  return nonce;
+  const key = await setupKey(db);
+  const exp = String(Date.now() + 30 * 60 * 1000);
+  return `${exp}.${await hmacHex(key, "setup:" + exp)}`;
 }
 
 export async function verifySetupNonce(db, nonce, now = Date.now()) {
-  if (!nonce) return false;
-  const hashRow = await db.prepare(`SELECT value FROM auth_config WHERE key = 'setup_nonce'`).first();
-  const atRow = await db.prepare(`SELECT value FROM auth_config WHERE key = 'setup_nonce_at'`).first();
-  if (!hashRow || !atRow) return false;
-  if (now - parseInt(atRow.value, 10) > 30 * 60 * 1000) return false;
-  return timingSafeEqual(await sha256Hex(String(nonce)), hashRow.value);
+  if (!nonce || typeof nonce !== "string") return false;
+  const dot = nonce.indexOf(".");
+  if (dot <= 0) return false;
+  const exp = nonce.slice(0, dot);
+  const sig = nonce.slice(dot + 1);
+  if (!/^\d+$/.test(exp) || parseInt(exp, 10) < now) return false;
+  const key = await setupKey(db);
+  return timingSafeEqual(await hmacHex(key, "setup:" + exp), sig);
 }
 
 export async function clearSetupNonce(db) {
-  await db.prepare(`DELETE FROM auth_config WHERE key IN ('setup_nonce', 'setup_nonce_at')`).run();
+  // 无状态 nonce 无需清理（向导在设置完成后由 hasAdminCredential 永久关闭）
 }
 
 // agent 凭证校验（常数时间）。接受新凭证 agent:<AGENT_TOKEN>，

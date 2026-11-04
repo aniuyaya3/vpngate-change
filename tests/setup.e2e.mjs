@@ -37,8 +37,14 @@ const postSetup = (fields, headers = FORM) =>
 {
   const noNonce = await postSetup({ password: SETUP_PASS, password2: SETUP_PASS });
   check("无 nonce 提交返回 400", noNonce.status === 400, `got ${noNonce.status}`);
-  const bad1 = await postSetup({ password: SETUP_PASS, password2: SETUP_PASS + "x", nonce: await freshNonce() });
+  // 无状态 nonce 回归：连续打开两次设置页，用第一次的 nonce 提交仍应有效
+  //（旧版单槽存储会被第二次打开冲掉，误报「页面已过期」）
+  const nonceA = await freshNonce();
+  await freshNonce();
+  const bad1 = await postSetup({ password: SETUP_PASS, password2: SETUP_PASS + "x", nonce: nonceA });
+  const bad1Text = await bad1.text();
   check("两次密码不一致返回 400", bad1.status === 400, `got ${bad1.status}`);
+  check("旧 nonce 不被后一次打开冲掉（报不一致而非已过期）", bad1Text.includes("两次输入的密码不一致"), bad1Text.slice(0, 80));
   const bad2 = await postSetup({ password: "short7", password2: "short7", nonce: await freshNonce() });
   check("密码少于 8 位返回 400", bad2.status === 400, `got ${bad2.status}`);
 }
@@ -53,7 +59,7 @@ let cookie = "";
   const html = await r.text();
   check("Origin 与 Host 不一致时设置成功 200（无 Bad Origin）", r.status === 200, `got ${r.status}`);
   check("成功页给出变量名 ADMIN_PASS_HASH", html.includes("ADMIN_PASS_HASH"));
-  check("成功页给出 pbkdf2-sha256 哈希", /pbkdf2-sha256\$210000\$[A-Za-z0-9+/=]+\$[A-Za-z0-9+/=]+/.test(html));
+  check("成功页给出 pbkdf2-sha256 哈希", /pbkdf2-sha256\$100000\$[A-Za-z0-9+/=]+\$[A-Za-z0-9+/=]+/.test(html));
   cookie = (r.headers.get("set-cookie") || "").split(";")[0];
   check("设置后自动签发 session", cookie.includes("session="), cookie);
   const dash = await fetch(`${BASE}/`, { headers: { Cookie: cookie, ...UA } });

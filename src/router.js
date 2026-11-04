@@ -136,6 +136,16 @@ async function handleLogin(request, env, url) {
 }
 
 export async function handleRequest(request, env, ctx) {
+  try {
+    return await routeRequest(request, env, ctx);
+  } catch (e) {
+    // 兜底：任何未捕获异常都回 500 并写日志，避免线上只看到 CF 1101 无从排查
+    console.error("unhandled error:", e && e.stack ? e.stack : e);
+    return text("Internal Error", 500);
+  }
+}
+
+async function routeRequest(request, env, ctx) {
   const url = new URL(request.url);
   const domain = url.origin;
   const path = url.pathname;
