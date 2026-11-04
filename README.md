@@ -48,7 +48,11 @@ tests/
 
 ```bash
 npm install
-npx wrangler d1 create vpngate-change-db   # 把输出的 database_id 填入 wrangler.toml
+npx wrangler d1 create vpngate-change-db   # 记下输出的 database_id
+
+# database_id 不写死在仓库里，二选一：
+#  A) 变量注入（推荐，不同仓库/项目各自填变量）：见下方「变量驱动部署」
+#  B) 直接把 wrangler.toml 里的占位符 database_id 改成上面的 ID
 
 # 管理员密码哈希（明文不进任何配置）
 node tools/hash-password.mjs '你的管理员密码'
@@ -57,6 +61,26 @@ npx wrangler secret put AGENT_TOKEN         # 长随机串，如 openssl rand -h
 npx wrangler secret put PROXY_PASS          # 代理用户密码
 
 npx wrangler deploy
+```
+
+### 变量驱动部署（database_id / Worker 名不进仓库）
+
+wrangler.toml 里 `database_id` 只留占位符，真实值在部署时由环境变量
+注入（`tools/deploy.mjs` 生成临时配置完成替换，不改源文件），这样
+同一份代码被不同仓库 / 不同 CF 项目引用时，各自填各自的变量即可：
+
+Cloudflare Workers Builds 设置：
+
+- 构建命令：无
+- 构建变量：`DATABASE_ID=<你的 D1 库 ID>`（可选再加 `WORKER_NAME=<实例名>`）
+- 部署命令：`node tools/deploy.mjs`
+- 根目录：`/`
+
+本地同理：
+
+```bash
+DATABASE_ID=<uuid> WORKER_NAME=<name> npm run deploy:vars
+# 两个变量都不设时，deploy.mjs 会原样使用 wrangler.toml 部署
 ```
 
 ### 首次部署设置向导（可代替手工生成哈希）

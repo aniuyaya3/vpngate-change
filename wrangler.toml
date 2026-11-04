@@ -26,6 +26,9 @@ PROXY_USER = "proxyuser"
 [[d1_databases]]
 binding = "DB"
 database_name = "vpngate-change-db"
-# 部署前先执行：npx wrangler d1 create vpngate-change-db
-# 再把输出的 database_id 填到这里：
+# database_id 不写死在仓库里，部署时用变量注入（不同仓库/项目各自填自己的）：
+#   方式一（Cloudflare Workers Builds）：构建变量加 DATABASE_ID=<你的库ID>，
+#           部署命令改用 node tools/deploy.mjs
+#   方式二（本地）：DATABASE_ID=<你的库ID> node tools/deploy.mjs
+#   也可以直接把下面占位符改成 npx wrangler d1 create vpngate-change-db 输出的 ID。
 database_id = "00000000-0000-0000-0000-000000000000"
