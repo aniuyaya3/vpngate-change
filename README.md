@@ -63,6 +63,32 @@ npx wrangler deploy
 agent 凭证）；未重装的旧 agent 以旧 `WEB_USER:WEB_PASS` 凭证继续兼容
 （见下）。
 
+## 同账号多实例部署（Worker 名字用变量）
+
+wrangler.toml 里的 `name` 只是默认实例名。同一份代码可以在同一个
+Cloudflare 账号下以任意名字反复部署（变量来自命令行 `--name`，
+覆盖配置文件；注意 wrangler.toml 的字段本身不支持 `${VAR}` 插值）：
+
+```bash
+# 以 proxy-a 这个名字部署（等价于 npx wrangler deploy --name proxy-a）
+WORKER_NAME=proxy-a npm run deploy:named
+
+# 每个实例分别设置自己的 secret（--name 指到哪个 Worker 就设哪个）
+npx wrangler secret put ADMIN_PASS_HASH --name proxy-a
+npx wrangler secret put AGENT_TOKEN --name proxy-a
+npx wrangler secret put PROXY_PASS --name proxy-a
+```
+
+注意数据隔离：`--name` 只改 Worker 名，各实例仍共用 wrangler.toml 里
+`database_id` 指向的同一个 D1（配置、节点、Session 互通）。要连数据
+也完全独立的实例，复制一份配置改名并换库：
+
+```bash
+npx wrangler d1 create vpngate-change-db-b   # 记下新的 database_id
+cp wrangler.toml wrangler.proxy-b.toml       # 改 name 与 database_id
+npx wrangler deploy -c wrangler.proxy-b.toml
+```
+
 ## 从旧版迁移（兼容说明）
 
 - 若线上只设置了旧版 `WEB_USER / WEB_PASS` secret 而没有 `ADMIN_PASS_HASH`：

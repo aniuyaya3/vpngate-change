@@ -1,3 +1,9 @@
+# name 只是默认实例名，部署时可被变量覆盖、在同账号部署多个不同名的实例：
+#   WORKER_NAME=proxy-a npm run deploy:named
+# 等价于 wrangler deploy --name proxy-a（secret 也可按实例设置：
+#   wrangler secret put ADMIN_PASS_HASH --name proxy-a）
+# 注意：--name 只改 Worker 名，D1 仍按下方 database_id 共享；
+# 要连数据也完全独立，见 README「同账号多实例部署」。
 name = "vpngate-change"
 main = "src/index.js"
 compatibility_date = "2025-04-01"
