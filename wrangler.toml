@@ -1,0 +1,25 @@
+name = "vpngate-change"
+main = "src/index.js"
+compatibility_date = "2025-04-01"
+
+# 非敏感配置（密码/令牌一律用 wrangler secret，不要写在这里）
+[vars]
+PROXY_PORT = "10001"
+PROXY_USER = "proxyuser"
+# ADMIN_USER = "admin"        # 管理员账号名（默认 admin，或旧版 WEB_USER）
+# AGENT_USER = "agent"        # VPS agent 账号名（默认 agent）
+# AUTH_PBKDF2_ITERATIONS = "210000"
+
+# 必需的 secret（wrangler secret put <NAME>）：
+#   ADMIN_PASS_HASH  管理员密码 PBKDF2-SHA256 哈希（node tools/hash-password.mjs '<密码>' 生成）
+#   AGENT_TOKEN      VPS agent 独立凭证（长随机串，与管理员密码不同）
+#   PROXY_PASS       代理用户密码
+# 过渡兼容：只设置旧版 WEB_USER / WEB_PASS 时，管理员密码会在首次登录时
+# 自动引导为 D1 中的 PBKDF2 哈希，agent 继续以旧凭证工作（见 README）。
+
+[[d1_databases]]
+binding = "DB"
+database_name = "vpngate-change-db"
+# 部署前先执行：npx wrangler d1 create vpngate-change-db
+# 再把输出的 database_id 填到这里：
+database_id = "00000000-0000-0000-0000-000000000000"
