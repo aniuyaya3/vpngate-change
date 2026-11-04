@@ -60,6 +60,27 @@ npx wrangler secret put PROXY_PASS          # 代理用户密码
 npx wrangler deploy
 ```
 
+### 环境变量一览
+
+| 变量名 | 说明 | 默认值/示例值 | 必填 |
+|---|---|---|---|
+| ADMIN_USER | 管理员登录账号名 | 默认 `admin` | 否 |
+| ADMIN_PASS_HASH | 管理员密码的 PBKDF2 哈希 | 例 `pbkdf2-sha256$100000$<盐>$<哈希>`，/setup 成功页会给出，或用 `node tools/hash-password.mjs '密码'` 生成 | 否（用 /setup 设密码就不用填） |
+| AGENT_USER | VPS agent 的账号名 | 默认 `agent` | 否 |
+| AGENT_TOKEN | VPS agent 与 Worker 的通信令牌 | 长随机串，如 `openssl rand -hex 32` 的输出 | 是（不设 agent 接口回 503，VPS 接不进来） |
+| PROXY_USER | 客户端连代理用的账号名 | `proxyuser`（已在 wrangler.toml 里） | 否 |
+| PROXY_PASS | 客户端连 SOCKS5/HTTP 代理的密码 | 默认 `888888`，务必改掉 | 否（但强烈建议设） |
+| PROXY_PORT | 代理监听端口 | `10001`（已在 wrangler.toml 里） | 否 |
+| AUTH_PBKDF2_ITERATIONS | 密码哈希迭代次数 | 默认 `100000`，可填 10000–100000（Workers 硬上限就是 100000） | 否 |
+| WEB_USER | 旧版兼容变量，**忽略** | — | 否 |
+| WEB_PASS | 旧版兼容变量，**忽略** | — | 否 |
+| WEB_PASS_HASH | 旧版兼容变量，**忽略** | — | 否 |
+
+设置位置：`ADMIN_PASS_HASH`、`AGENT_TOKEN`、`PROXY_PASS` 用密钥（secret）方式设置，
+不会被 Git 推送部署冲掉；其余纯文本变量要长期生效须写进 wrangler.toml 的 `[vars]`
+（只在 CF 面板手加的纯文本变量会在下一次推送部署时被配置覆盖）。
+`DB` 是 D1 绑定而非变量，走自动置备，无需填写。
+
 ### D1 自动置备（库名/ID 都不进仓库）
 
 wrangler.toml 的 D1 绑定只写 `binding = "DB"`，不写 `database_name`、

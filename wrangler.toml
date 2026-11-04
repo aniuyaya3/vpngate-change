@@ -13,7 +13,7 @@ PROXY_PORT = "10001"
 PROXY_USER = "proxyuser"
 # ADMIN_USER = "admin"        # 管理员账号名（默认 admin，或旧版 WEB_USER）
 # AGENT_USER = "agent"        # VPS agent 账号名（默认 agent）
-# AUTH_PBKDF2_ITERATIONS = "210000"
+# AUTH_PBKDF2_ITERATIONS = "100000"
 
 # 必需的 secret（wrangler secret put <NAME>）：
 #   ADMIN_PASS_HASH  管理员密码 PBKDF2-SHA256 哈希（node tools/hash-password.mjs '<密码>' 生成）
