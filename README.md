@@ -143,3 +143,7 @@ npm test
 BASE_URL=http://127.0.0.1:8787 ADMIN_PASS='...' AGENT_TOKEN='...' node tests/e2e.mjs
 BASE_URL=http://127.0.0.1:8789 node tests/setup.e2e.mjs   # 对未设密码的实例运行
 ```
+
+## 源项目
+
+改制于 https://github.com/a6216abcd/Free-Residential-IP-Proxy-Controller
