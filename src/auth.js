@@ -136,7 +136,11 @@ export async function resolveAdminHash(env, db) {
     return fromSecret;
   }
   const legacy = env.WEB_PASS || "";
-  if (!legacy) return null; // 未配置任何管理员凭证：登录关闭（不再有默认密碼）
+  if (!legacy) {
+    // 无 secret、无旧变量时：使用 D1 中已存的哈希（首次部署设置向导 /setup 写入）
+    const row = await db.prepare(`SELECT value FROM auth_config WHERE key = 'admin_pass_hash'`).first();
+    return row && parseHash(row.value) ? row.value : null;
+  }
   const fingerprint = (await sha256Hex(legacy)).slice(0, 32);
   const row = await db.prepare(`SELECT value FROM auth_config WHERE key = 'admin_pass_hash'`).first();
   const fpRow = await db.prepare(`SELECT value FROM auth_config WHERE key = 'admin_pass_fp'`).first();
@@ -147,6 +151,24 @@ export async function resolveAdminHash(env, db) {
   await db.prepare(`INSERT INTO auth_config (key, value) VALUES ('admin_pass_fp', ?1)
     ON CONFLICT(key) DO UPDATE SET value = excluded.value`).bind(fingerprint).run();
   return fresh;
+}
+
+// 是否已存在任何管理员凭证（secret / 旧变量 / D1 已存哈希）
+// 全部为空时，首次部署设置向导 /setup 才开放
+export async function hasAdminCredential(env, db) {
+  if ((env.ADMIN_PASS_HASH || env.WEB_PASS_HASH || "").trim()) return true;
+  if (env.WEB_PASS) return true;
+  const row = await db.prepare(`SELECT value FROM auth_config WHERE key = 'admin_pass_hash'`).first();
+  return !!(row && parseHash(row.value));
+}
+
+// 设置向导写入管理员哈希（fp 标记为 setup；secret 与旧变量的优先级更高，
+// 见 resolveAdminHash：它们存在时按各自规则解析，不受此行影响）
+export async function storeSetupAdminHash(db, hash) {
+  await db.prepare(`INSERT INTO auth_config (key, value) VALUES ('admin_pass_hash', ?1)
+    ON CONFLICT(key) DO UPDATE SET value = excluded.value`).bind(hash).run();
+  await db.prepare(`INSERT INTO auth_config (key, value) VALUES ('admin_pass_fp', 'setup')
+    ON CONFLICT(key) DO UPDATE SET value = excluded.value`).run();
 }
 
 // agent 凭证校验（常数时间）。接受新凭证 agent:<AGENT_TOKEN>，

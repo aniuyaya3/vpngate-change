@@ -40,7 +40,7 @@ tests/
 
 鉴权分层：
 
-- 公开：`GET /api/countries`、`GET /health`、`/login`
+- 公开：`GET /api/countries`、`GET /health`、`/login`、`/setup`（仅在未配置任何管理员凭证时开放，设置后永久关闭）
 - agent（Basic `agent:<AGENT_TOKEN>` 或 Bearer）：`GET /scripts/*.py`、`GET /agent`、`GET /uninstall`、`GET /api/config`、`POST /api/report`
 - 管理员（Session，写操作加 CSRF）：`GET /`、`GET /api/nodes`、`GET /api/proxies`、`GET /api/config`、`POST /api/config`、`POST /api/switch`
 
@@ -58,6 +58,26 @@ npx wrangler secret put PROXY_PASS          # 代理用户密码
 
 npx wrangler deploy
 ```
+
+### 首次部署设置向导（可代替手工生成哈希）
+
+不想在本地生成哈希也可以：先只建好 D1 并部署（管理员 secret 可以先不设），
+然后打开你的 Worker 域名——在没有任何管理员凭证时，根路径会自动弹出
+「设置管理员密码」页面：
+
+1. 在页面上设置密码（至少 8 位）并提交；
+2. 密码立即生效（PBKDF2 哈希保存在 D1 中），并自动登录进面板；
+3. 成功页会给出变量名 `ADMIN_PASS_HASH` 与对应的哈希值，复制到 CF 后台
+   （Worker → 设置 → 变量和机密 → 添加机密）保存即可；机密变量优先级
+   最高，保存后以它为准。
+
+安全说明：向导只在「secret、旧变量、D1 哈希三者全为空」时开放，设置
+完成后永久关闭；但在设置完成之前，第一个打开域名的人都能抢先设置，
+所以部署后请立刻完成设置，不要把未设置的实例长时间暴露在公网。
+
+找回/重置密码：删除 CF 后台的 `ADMIN_PASS_HASH` 机密，并删除 D1
+`auth_config` 表中 `admin_pass_hash` 与 `admin_pass_fp` 两行，向导会
+重新开放，可重新设定。
 
 部署后已部署的旧版 agent 需重新运行面板中的接入命令（新版安装命令使用
 agent 凭证）；未重装的旧 agent 以旧 `WEB_USER:WEB_PASS` 凭证继续兼容

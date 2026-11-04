@@ -7,9 +7,10 @@ import {
   adminUsername, agentUsername, agentToken, resolveAdminHash, verifyPassword,
   verifyAgentRequest, loginBlockedMs, recordLoginFailure, clearLoginFailures,
   createSession, validateSession, destroySession, checkCsrf, clientIp, securityHeaders,
+  hasAdminCredential, storeSetupAdminHash, hashPassword, iterationsOf,
 } from "./auth.js";
 import { initDb, shq } from "./db.js";
-import { loginHtml } from "./login_page.js";
+import { loginHtml, setupHtml, setupDoneHtml } from "./login_page.js";
 import { dashboardHtml } from "./dashboard.js";
 import { proxyServerPy } from "./scripts/proxy_server.js";
 import { liteManagerPy } from "./scripts/lite_manager.js";
@@ -32,10 +33,45 @@ function adminDenied(request, url) {
   return text("Unauthorized", 401);
 }
 
+// 首次部署设置向导：没有任何管理员凭证时开放，设置后永久关闭。
+// 设置的哈希立即写入 D1 生效，同时把变量名+哈希展示给用户，
+// 供其到 CF 后台添加为机密变量（secret 优先级最高，保存后以它为准）。
+async function handleSetup(request, env) {
+  if (await hasAdminCredential(env, env.DB)) return redirect("/login");
+  const username = adminUsername(env);
+  if (request.method === "GET") {
+    return new Response(setupHtml({ username }), { headers: securityHeaders({ "Content-Type": "text/html;charset=UTF-8" }) });
+  }
+  if (request.method !== "POST") return text("Method Not Allowed", 405);
+  const origin = request.headers.get("Origin");
+  if (origin) {
+    try { if (new URL(origin).host !== new URL(request.url).host) return text("Bad Origin", 403); } catch (e) { return text("Bad Origin", 403); }
+  }
+  let password = "", password2 = "";
+  try {
+    const form = await request.formData();
+    password = String(form.get("password") || "");
+    password2 = String(form.get("password2") || "");
+  } catch (e) { return text("Bad Request", 400); }
+  const fail = (msg) => new Response(setupHtml({ username, error: msg }),
+    { status: 400, headers: securityHeaders({ "Content-Type": "text/html;charset=UTF-8" }) });
+  if (password.length < 8) return fail("密码至少 8 位");
+  if (password !== password2) return fail("两次输入的密码不一致");
+  // 提交瞬间再查一次，防止并发下重复设置
+  if (await hasAdminCredential(env, env.DB)) return redirect("/login");
+  const hash = await hashPassword(password, iterationsOf(env));
+  await storeSetupAdminHash(env.DB, hash);
+  const { cookie } = await createSession(env.DB, request, username);
+  return new Response(setupDoneHtml({ username, hash }), {
+    headers: securityHeaders({ "Content-Type": "text/html;charset=UTF-8", "Set-Cookie": cookie }),
+  });
+}
+
 async function handleLogin(request, env, url) {
   if (request.method === "GET") {
     const session = await validateSession(env.DB, request);
     if (session) return redirect("/");
+    if (!(await hasAdminCredential(env, env.DB))) return redirect("/setup");
     return new Response(loginHtml({}), { headers: securityHeaders({ "Content-Type": "text/html;charset=UTF-8" }) });
   }
   if (request.method !== "POST") return text("Method Not Allowed", 405);
@@ -112,6 +148,7 @@ export async function handleRequest(request, env, ctx) {
   // ---------- 公开 ----------
   if (path === "/health") return text("OK");
   if (path === "/api/countries") return handleCountries();
+  if (path === "/setup") return handleSetup(request, env);
   if (path === "/login") return handleLogin(request, env, url);
   if (path === "/logout") {
     const clearCookie = await destroySession(env.DB, request);
@@ -151,7 +188,11 @@ export async function handleRequest(request, env, ctx) {
   const ADMIN_PATHS = ["/", "/api/nodes", "/api/proxies", "/api/switch"];
   if (ADMIN_PATHS.includes(path) || (path === "/api/config" && request.method === "POST")) {
     const session = await validateSession(env.DB, request);
-    if (!session) return adminDenied(request, url);
+    if (!session) {
+      // 未配置任何管理员凭证时，根路径直接弹首次设置向导
+      if (path === "/" && !(await hasAdminCredential(env, env.DB))) return redirect("/setup");
+      return adminDenied(request, url);
+    }
     if (request.method !== "GET" && request.method !== "HEAD" && !checkCsrf(request, session)) {
       return text("CSRF validation failed", 403);
     }

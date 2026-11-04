@@ -31,6 +31,12 @@ async function loginJson(user, pass, headers = {}) {
   check("未登录 /api/nodes 返回 401", n.status === 401, `got ${n.status}`);
 }
 
+// 1b. 已配置凭证的实例：设置向导应关闭（跳转登录页）
+{
+  const r = await fetch(`${BASE}/setup`, { redirect: "manual", headers: UA });
+  check("已配置实例 /setup 关闭并跳转 /login", r.status === 302 && (r.headers.get("location") || "").includes("/login"), `got ${r.status} ${r.headers.get("location")}`);
+}
+
 // 2. agent 凭证不能登录管理员（管理员独立保护）
 {
   const r = await loginJson(ADMIN_USER, AGENT_TOKEN);
