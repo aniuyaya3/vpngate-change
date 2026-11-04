@@ -34,7 +34,11 @@ Cloudflare Workers Builds（Git 连接）设置：
 | AGENT_TOKEN | VPS agent 与 Worker 的通信令牌 | 长随机串，如 `openssl rand -hex 32` 的输出 | 是（不设 agent 接口回 503） |
 | PROXY_USER | 客户端连代理用的账号名 | `proxyuser`（已在 wrangler.toml 里） | 否 |
 | PROXY_PASS | 客户端连 SOCKS5/HTTP 代理的密码 | 默认 `888888`，务必改掉 | 否（但强烈建议设） |
+| PROXY_PORT | 代理监听端口 | `10001`（已在 wrangler.toml 里） | 否 |
 | AUTH_PBKDF2_ITERATIONS | 密码哈希迭代次数 | 默认 `100000`，可填 10000–100000（Workers 硬上限即 100000） | 否 |
+| WEB_USER | 旧版兼容变量，**忽略** | — | 否 |
+| WEB_PASS | 旧版兼容变量，**忽略** | — | 否 |
+| WEB_PASS_HASH | 旧版兼容变量，**忽略** | — | 否 |
 
 - 密钥类（`ADMIN_PASS_HASH`、`AGENT_TOKEN`、`PROXY_PASS`）在后台以机密方式设置，不会被 Git 推送部署冲掉；
 - 纯文本变量要长期生效须写进 wrangler.toml 的 `[vars]`，只在后台手加的会在下一次推送部署时被覆盖；
@@ -43,23 +47,28 @@ Cloudflare Workers Builds（Git 连接）设置：
 ## 项目结构
 
 ```text
-wrangler.toml            Wrangler 配置（D1 只留 binding，自动置备）
-src/
-  index.js               入口（仅导出 fetch）
-  router.js              路由与三层鉴权分发
-  auth.js                PBKDF2 / 防爆破 / Session / CSRF / 设置向导 nonce
-  db.js                  D1 建表与配置存取
-  api.js                 配置 / 节点 / 上报 / 国家列表等业务接口
-  dashboard.js           管理面板 HTML
-  login_page.js          登录页与首次设置向导页
-  scripts/               下发给 VPS 的 proxy_server / lite_manager（Python）与安装脚本模板
-tools/
-  hash-password.mjs      生成管理员密码哈希
-  deploy.mjs             可选的变量驱动部署（见「进阶」）
-tests/
-  auth.test.mjs          单元测试
-  e2e.mjs                主流程端到端测试
-  setup.e2e.mjs          首次设置向导端到端测试
+vpngate-change/
+├── wrangler.toml              Wrangler 配置（D1 只留 binding，自动置备）
+├── package.json               项目信息与 npm 脚本
+├── src/
+│   ├── index.js               入口（仅导出 fetch）
+│   ├── router.js              路由与三层鉴权分发
+│   ├── auth.js                PBKDF2 / 防爆破 / Session / CSRF / 设置向导 nonce
+│   ├── db.js                  D1 建表与配置存取
+│   ├── api.js                 配置 / 节点 / 上报 / 国家列表等业务接口
+│   ├── dashboard.js           管理面板 HTML
+│   ├── login_page.js          登录页与首次设置向导页
+│   └── scripts/               下发给 VPS 的脚本模板
+│       ├── proxy_server.js    代理引擎模板（生成 proxy_server.py）
+│       ├── lite_manager.js    节点管理模板（生成 lite_manager.py）
+│       └── agent.js           VPS 安装 / 卸载 bash 脚本模板
+├── tools/
+│   ├── hash-password.mjs      生成管理员密码哈希
+│   └── deploy.mjs             可选的变量驱动部署（见「进阶」）
+└── tests/
+    ├── auth.test.mjs          单元测试
+    ├── e2e.mjs                主流程端到端测试
+    └── setup.e2e.mjs          首次设置向导端到端测试
 ```
 
 ## 账号安全
