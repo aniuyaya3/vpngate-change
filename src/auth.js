@@ -171,6 +171,31 @@ export async function storeSetupAdminHash(db, hash) {
     ON CONFLICT(key) DO UPDATE SET value = excluded.value`).run();
 }
 
+// 设置向导的一次性 nonce（防 CSRF 用，不依赖 Origin 头）：
+// GET /setup 时生成、只存哈希，POST 时比对且 30 分钟内有效，成功后删除。
+export async function createSetupNonce(db) {
+  const nonce = randomToken(32);
+  const now = Date.now();
+  await db.prepare(`INSERT INTO auth_config (key, value) VALUES ('setup_nonce', ?1)
+    ON CONFLICT(key) DO UPDATE SET value = excluded.value`).bind(await sha256Hex(nonce)).run();
+  await db.prepare(`INSERT INTO auth_config (key, value) VALUES ('setup_nonce_at', ?1)
+    ON CONFLICT(key) DO UPDATE SET value = excluded.value`).bind(String(now)).run();
+  return nonce;
+}
+
+export async function verifySetupNonce(db, nonce, now = Date.now()) {
+  if (!nonce) return false;
+  const hashRow = await db.prepare(`SELECT value FROM auth_config WHERE key = 'setup_nonce'`).first();
+  const atRow = await db.prepare(`SELECT value FROM auth_config WHERE key = 'setup_nonce_at'`).first();
+  if (!hashRow || !atRow) return false;
+  if (now - parseInt(atRow.value, 10) > 30 * 60 * 1000) return false;
+  return timingSafeEqual(await sha256Hex(String(nonce)), hashRow.value);
+}
+
+export async function clearSetupNonce(db) {
+  await db.prepare(`DELETE FROM auth_config WHERE key IN ('setup_nonce', 'setup_nonce_at')`).run();
+}
+
 // agent 凭证校验（常数时间）。接受新凭证 agent:<AGENT_TOKEN>，
 // 也接受旧 agent 的 <WEB_USER>:<WEB_PASS> 以便存量 VPS 不掉线。
 export function verifyAgentCredential(env, cred) {
@@ -302,12 +327,9 @@ export async function destroySession(db, request) {
   return `${sessionCookieName(request)}=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0` + (secure ? "; Secure" : "");
 }
 
-// 管理员接口的 CSRF + Origin 校验（配合面板注入的 X-CSRF-Token）
+// 管理员接口的 CSRF 校验：以面板注入的 X-CSRF-Token 为准（双提交模式）。
+// 不再硬比 Origin 与 Host：经自定义域名/反代访问时两者可能不一致，会误伤合法请求。
 export function checkCsrf(request, session) {
-  const origin = request.headers.get("Origin");
-  if (origin) {
-    try { if (new URL(origin).host !== new URL(request.url).host) return false; } catch (e) { return false; }
-  }
   const token = request.headers.get("X-CSRF-Token") || "";
   return !!session && timingSafeEqual(token, session.csrf || "");
 }

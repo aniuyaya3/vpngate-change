@@ -34,7 +34,7 @@ tests/
 | 密码存储 | PBKDF2-SHA256，210,000 次迭代（可调 `AUTH_PBKDF2_ITERATIONS`），16 字节随机盐，32 字节派生密钥；哈希串格式 `pbkdf2-sha256$迭代$盐$哈希`。服务端不存明文密码，校验为派生后常数时间比较；账号不存在时走等价虚拟哈希，防时序枚举 |
 | 防爆破 | 失败计数按 `(来源 IP + 账号)` 与 `(账号)` 双维度记录在 D1。分级延迟：失败 1–2 次不延迟，3 次 2s、4 次 5s、5 次 15s、6 次 30s、7 次 60s、8 次 120s、9 次 300s；`(IP+账号)` 维度满 10 次锁定 15 分钟。等待期内请求在验密前直接返回 `429 + Retry-After`。账号全局维度只延迟不硬锁，防止攻击者用已知用户名把管理员锁死 |
 | 安全 Session | 登录签发 256 位随机令牌，D1 只存其 SHA-256 哈希；Cookie 为 `__Host-session`（HttpOnly + Secure + SameSite=Strict），绝对过期 12 小时、空闲过期 30 分钟（滑动），绑定 User-Agent 指纹，登录即轮换，登出即注销 |
-| CSRF / 点击劫持 | 管理员写操作必须带面板注入的 `X-CSRF-Token` 并校验 Origin；全站响应带 `no-store`、`nosniff`、`X-Frame-Options: DENY` |
+| CSRF / 点击劫持 | 管理员写操作必须带面板注入的 `X-CSRF-Token`（双提交）；设置向导用一次性 nonce；全站响应带 `no-store`、`nosniff`、`X-Frame-Options: DENY` |
 | 管理员独立保护 | 管理员与 VPS agent 使用**两套完全独立的凭证**：agent 凭证（`AGENT_TOKEN`）只能访问拉配置 / 上报 / 下载脚本，不能进面板、不能调管理员 API；管理员 Session 也不能替代 agent 凭证。管理员被锁定不影响 agent 心跳，agent 凭证泄露不会交出面板 |
 | 默认口令 | 已移除旧版 `admin888` 默认密码：未配置任何管理员凭证时登录直接返回 503 |
 

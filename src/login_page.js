@@ -1,5 +1,5 @@
 // 首次部署设置向导：仅在「没有任何管理员凭证」时开放，设置成功即永久关闭
-export function setupHtml({ username = "admin", error = "" } = {}) {
+export function setupHtml({ username = "admin", error = "", nonce = "" } = {}) {
   const err = error ? `<div class="err">${error}</div>` : "";
   return `<!DOCTYPE html>
 <html lang="zh-CN">
@@ -32,6 +32,7 @@ export function setupHtml({ username = "admin", error = "" } = {}) {
 </head>
 <body>
   <form class="card" method="POST" action="/setup">
+    <input type="hidden" name="nonce" value="${nonce}">
     <h1>首次部署 · 设置管理员密码</h1>
     <p class="sub">本实例尚未设置任何管理员凭证，请先创建登录密码</p>
     <div class="warn">此页面只在未设置密码时出现，第一个完成设置的人即为管理员——部署后请立即设置，不要把未设置的实例长时间暴露在公网。</div>

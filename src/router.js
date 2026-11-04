@@ -8,6 +8,7 @@ import {
   verifyAgentRequest, loginBlockedMs, recordLoginFailure, clearLoginFailures,
   createSession, validateSession, destroySession, checkCsrf, clientIp, securityHeaders,
   hasAdminCredential, storeSetupAdminHash, hashPassword, iterationsOf,
+  createSetupNonce, verifySetupNonce, clearSetupNonce,
 } from "./auth.js";
 import { initDb, shq } from "./db.js";
 import { loginHtml, setupHtml, setupDoneHtml } from "./login_page.js";
@@ -40,27 +41,28 @@ async function handleSetup(request, env) {
   if (await hasAdminCredential(env, env.DB)) return redirect("/login");
   const username = adminUsername(env);
   if (request.method === "GET") {
-    return new Response(setupHtml({ username }), { headers: securityHeaders({ "Content-Type": "text/html;charset=UTF-8" }) });
+    const nonce = await createSetupNonce(env.DB);
+    return new Response(setupHtml({ username, nonce }), { headers: securityHeaders({ "Content-Type": "text/html;charset=UTF-8" }) });
   }
   if (request.method !== "POST") return text("Method Not Allowed", 405);
-  const origin = request.headers.get("Origin");
-  if (origin) {
-    try { if (new URL(origin).host !== new URL(request.url).host) return text("Bad Origin", 403); } catch (e) { return text("Bad Origin", 403); }
-  }
-  let password = "", password2 = "";
+  let password = "", password2 = "", nonce = "";
   try {
     const form = await request.formData();
     password = String(form.get("password") || "");
     password2 = String(form.get("password2") || "");
+    nonce = String(form.get("nonce") || "");
   } catch (e) { return text("Bad Request", 400); }
-  const fail = (msg) => new Response(setupHtml({ username, error: msg }),
+  const fail = async (msg) => new Response(setupHtml({ username, error: msg, nonce: await createSetupNonce(env.DB) }),
     { status: 400, headers: securityHeaders({ "Content-Type": "text/html;charset=UTF-8" }) });
+  // 防跨站提交：必须带本页签发的一次性 nonce（不依赖 Origin/Host，经反代或自定义域名也不会误伤）
+  if (!(await verifySetupNonce(env.DB, nonce))) return fail("页面已过期，请刷新后重试");
   if (password.length < 8) return fail("密码至少 8 位");
   if (password !== password2) return fail("两次输入的密码不一致");
   // 提交瞬间再查一次，防止并发下重复设置
   if (await hasAdminCredential(env, env.DB)) return redirect("/login");
   const hash = await hashPassword(password, iterationsOf(env));
   await storeSetupAdminHash(env.DB, hash);
+  await clearSetupNonce(env.DB);
   const { cookie } = await createSession(env.DB, request, username);
   return new Response(setupDoneHtml({ username, hash }), {
     headers: securityHeaders({ "Content-Type": "text/html;charset=UTF-8", "Set-Cookie": cookie }),
